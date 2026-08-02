@@ -7,6 +7,10 @@
   ],
   "rewrites": [
     {
+      "source": "/webhook",
+      "destination": "main.py"
+    },
+    {
       "source": "/(.*)",
       "destination": "main.py"
     }
