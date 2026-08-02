@@ -917,40 +917,94 @@ async def delete_webhook_safe():
         logger.warning(f"فشل حذف Webhook: {e}")
         return False
 
-def main():
+# ============================================================
+# تهيئة Vercel (ASGI)
+# ============================================================
+
+_app_instance = None
+_queue_worker_task = None
+
+def build_application():
+    """بناء تطبيق البوت مع جميع المعالجات."""
+    global _app_instance
+    if _app_instance is not None:
+        return _app_instance
+    
+    app = Application.builder().token(config.BOT_TOKEN).build()
+    
+    # إضافة المعالجات
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("admin", admin.admin_panel_command))
+    app.add_handler(CommandHandler("add_points", admin.add_points_command))
+    app.add_handler(CommandHandler("remove_points", admin.remove_points_command))
+    app.add_handler(CommandHandler("create_gift", admin.create_gift_command))
+    app.add_handler(CommandHandler("ban", admin.ban_command))
+    app.add_handler(CommandHandler("unban", admin.unban_command))
+    app.add_handler(CommandHandler("banned_list", admin.banned_list_command))
+    app.add_handler(admin.get_admin_conversation_handler())
+    app.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
+    app.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
+    app.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
+    app.add_handler(CallbackQueryHandler(promo_channel_handler, pattern="^promo_channel$"))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_image))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'), handle_url))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
+    app.add_handler(CallbackQueryHandler(other_callbacks, pattern="^(?!extract$|create_prompt$|cancel_extract$|admin_|promo_channel$).*$"))
+    app.add_error_handler(error_handler)
+    
+    _app_instance = app
+    return app
+
+def start_queue_worker():
+    """بدء معالج الطابور الخلفي (يُستدعى مرة واحدة)."""
+    global _queue_worker_task
+    if _queue_worker_task is None or _queue_worker_task.done():
+        loop = asyncio.get_event_loop()
+        _queue_worker_task = loop.create_task(queue_worker())
+        logger.info("تم بدء معالج الطابور الخلفي لـ Vercel")
+
+async def handler(request):
+    """نقطة دخول Vercel (ASGI)."""
+    # تهيئة التطبيق والطابور عند أول طلب
+    app = build_application()
+    start_queue_worker()
+    
     try:
-        logger.info("محاولة حذف Webhook...")
-        try:
-            asyncio.run(delete_webhook_safe())
-        except Exception as e:
-            logger.warning(f"فشل حذف Webhook (قد لا يكون موجوداً): {e}")
-        
+        # استقبال البيانات من الطلب
+        data = await request.json()
+        update = Update.de_json(data, app.bot)
+        await app.process_update(update)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"خطأ في معالج webhook: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}, 500
+
+# ============================================================
+# التشغيل المحلي (polling) للاختبار
+# ============================================================
+
+def main():
+    """تشغيل البوت محلياً باستخدام polling (للتطوير)."""
+    try:
+        logger.info("تشغيل البوت في وضع polling...")
         database.init_db()
-        logger.info("تم تهيئة قاعدة البيانات")
         
+        # بدء الطابور
+        global queue_worker_task
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        global queue_worker_task
         queue_worker_task = loop.create_task(queue_worker())
-        logger.info("تم بدء معالج الطابور الخلفي")
         
-        # ===== البروكسي =====
-        if config.PROXY_ENABLED:
-            proxy_display = f"{config.PROXY_TYPE}://{config.PROXY_HOST}:{config.PROXY_PORT}"
-            if config.PROXY_USER and config.PROXY_PASS:
-                proxy_display = f"{config.PROXY_TYPE}://{config.PROXY_USER}:***@{config.PROXY_HOST}:{config.PROXY_PORT}"
-            logger.info(f"البروكسي مفعل: {proxy_display}")
-        else:
-            logger.info("البروكسي غير مفعل (اتصال مباشر)")
+        # بناء التطبيق
+        app = build_application()
         
+        # التحقق من صلاحيات القناة (اختياري)
         async def check_channel_permissions():
             try:
-                app_temp = Application.builder().token(config.BOT_TOKEN).build()
-                bot = app_temp.bot
                 chat_id = config.PROMO_CHANNEL_ID_NUMERIC or config.PROMO_CHANNEL_ID
                 if chat_id:
-                    me = await bot.get_chat_member(chat_id, bot.id)
+                    me = await app.bot.get_chat_member(chat_id, app.bot.id)
                     if me.status not in ["administrator", "creator"]:
                         logger.warning(f"البوت ليس أدمن في القناة {chat_id}، قد لا يتمكن من النشر.")
                     else:
@@ -962,37 +1016,11 @@ def main():
         
         loop.create_task(check_channel_permissions())
         
-        app = Application.builder().token(config.BOT_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("cancel", cancel_command))
-        app.add_handler(CommandHandler("admin", admin.admin_panel_command))
-        app.add_handler(CommandHandler("add_points", admin.add_points_command))
-        app.add_handler(CommandHandler("remove_points", admin.remove_points_command))
-        app.add_handler(CommandHandler("create_gift", admin.create_gift_command))
-        app.add_handler(CommandHandler("ban", admin.ban_command))
-        app.add_handler(CommandHandler("unban", admin.unban_command))
-        app.add_handler(CommandHandler("banned_list", admin.banned_list_command))
-        app.add_handler(admin.get_admin_conversation_handler())
-        app.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
-        app.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
-        app.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
-        app.add_handler(CallbackQueryHandler(promo_channel_handler, pattern="^promo_channel$"))
-        app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_image))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'), handle_url))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
-        app.add_handler(CallbackQueryHandler(other_callbacks, pattern="^(?!extract$|create_prompt$|cancel_extract$|admin_|promo_channel$).*$"))
-        app.add_error_handler(error_handler)
-        
-        logger.info("البوت يعمل الآن مع poll_interval=5 وطابور خلفي")
+        logger.info("البوت يعمل الآن مع polling")
         app.run_polling(poll_interval=5, allowed_updates=Update.ALL_TYPES)
-        
     except Exception as e:
         logger.critical(f"فشل بدء التشغيل: {e}", exc_info=True)
         raise
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.critical(f"فشل تشغيل البوت: {e}", exc_info=True)
-        raise
+    main()
