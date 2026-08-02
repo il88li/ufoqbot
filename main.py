@@ -973,6 +973,19 @@ async def asgi_app(scope, receive, send):
         await send({"type": "http.response.body", "body": b"Method Not Allowed"})
         return
     
+    # التأكد من أن الطلب هو POST (webhooks من Telegram تكون POST)
+    if scope.get("method") != "POST":
+        await send({
+            "type": "http.response.start",
+            "status": 405,
+            "headers": [(b"content-type", b"text/plain")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": b"Method Not Allowed. Only POST requests are supported."
+        })
+        return
+    
     # تهيئة التطبيق والطابور عند أول طلب
     app_obj = build_application()
     start_queue_worker()
@@ -985,6 +998,19 @@ async def asgi_app(scope, receive, send):
         if message["type"] == "http.request":
             body += message.get("body", b"")
             more_body = message.get("more_body", False)
+    
+    # التأكد من أن الجسم ليس فارغاً
+    if not body:
+        await send({
+            "type": "http.response.start",
+            "status": 400,
+            "headers": [(b"content-type", b"application/json")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": json.dumps({"status": "error", "message": "Empty request body"}).encode("utf-8")
+        })
+        return
     
     try:
         # تحويل البيانات إلى JSON
@@ -999,6 +1025,18 @@ async def asgi_app(scope, receive, send):
         await send({
             "type": "http.response.start",
             "status": 200,
+            "headers": [(b"content-type", b"application/json")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": response_body
+        })
+    except json.JSONDecodeError as e:
+        logger.error(f"خطأ في تحليل JSON: {e}")
+        response_body = json.dumps({"status": "error", "message": f"Invalid JSON: {str(e)}"}).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 400,
             "headers": [(b"content-type", b"application/json")]
         })
         await send({
