@@ -501,5 +501,3 @@ async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_caption("لا يمكنك استخدام هذه الميزة.")
         return
     if not await check_subscription(user_id, context
-# في نهاية الملف
-app = fastapi_app
