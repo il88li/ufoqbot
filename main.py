@@ -923,38 +923,40 @@ async def delete_webhook_safe():
 
 _app_instance = None
 _queue_worker_task = None
+app = None  # المتغير المطلوب من Vercel
 
 def build_application():
     """بناء تطبيق البوت مع جميع المعالجات."""
-    global _app_instance
+    global _app_instance, app
     if _app_instance is not None:
         return _app_instance
     
-    app = Application.builder().token(config.BOT_TOKEN).build()
+    app_obj = Application.builder().token(config.BOT_TOKEN).build()
     
-    # إضافة المعالجات
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel_command))
-    app.add_handler(CommandHandler("admin", admin.admin_panel_command))
-    app.add_handler(CommandHandler("add_points", admin.add_points_command))
-    app.add_handler(CommandHandler("remove_points", admin.remove_points_command))
-    app.add_handler(CommandHandler("create_gift", admin.create_gift_command))
-    app.add_handler(CommandHandler("ban", admin.ban_command))
-    app.add_handler(CommandHandler("unban", admin.unban_command))
-    app.add_handler(CommandHandler("banned_list", admin.banned_list_command))
-    app.add_handler(admin.get_admin_conversation_handler())
-    app.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
-    app.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
-    app.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
-    app.add_handler(CallbackQueryHandler(promo_channel_handler, pattern="^promo_channel$"))
-    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_image))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'), handle_url))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
-    app.add_handler(CallbackQueryHandler(other_callbacks, pattern="^(?!extract$|create_prompt$|cancel_extract$|admin_|promo_channel$).*$"))
-    app.add_error_handler(error_handler)
+    # إضافة جميع المعالجات
+    app_obj.add_handler(CommandHandler("start", start))
+    app_obj.add_handler(CommandHandler("cancel", cancel_command))
+    app_obj.add_handler(CommandHandler("admin", admin.admin_panel_command))
+    app_obj.add_handler(CommandHandler("add_points", admin.add_points_command))
+    app_obj.add_handler(CommandHandler("remove_points", admin.remove_points_command))
+    app_obj.add_handler(CommandHandler("create_gift", admin.create_gift_command))
+    app_obj.add_handler(CommandHandler("ban", admin.ban_command))
+    app_obj.add_handler(CommandHandler("unban", admin.unban_command))
+    app_obj.add_handler(CommandHandler("banned_list", admin.banned_list_command))
+    app_obj.add_handler(admin.get_admin_conversation_handler())
+    app_obj.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
+    app_obj.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
+    app_obj.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
+    app_obj.add_handler(CallbackQueryHandler(promo_channel_handler, pattern="^promo_channel$"))
+    app_obj.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_image))
+    app_obj.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'), handle_url))
+    app_obj.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
+    app_obj.add_handler(CallbackQueryHandler(other_callbacks, pattern="^(?!extract$|create_prompt$|cancel_extract$|admin_|promo_channel$).*$"))
+    app_obj.add_error_handler(error_handler)
     
-    _app_instance = app
-    return app
+    _app_instance = app_obj
+    app = app_obj  # تعيين المتغير العام
+    return app_obj
 
 def start_queue_worker():
     """بدء معالج الطابور الخلفي (يُستدعى مرة واحدة)."""
@@ -965,13 +967,13 @@ def start_queue_worker():
         logger.info("تم بدء معالج الطابور الخلفي لـ Vercel")
 
 async def handler(request):
-    """نقطة دخول Vercel (ASGI)."""
+    """نقطة دخول Vercel (ASGI) - تستخدم المتغير العام app."""
     # تهيئة التطبيق والطابور عند أول طلب
-    app = build_application()
+    if app is None:
+        build_application()
     start_queue_worker()
     
     try:
-        # استقبال البيانات من الطلب
         data = await request.json()
         update = Update.de_json(data, app.bot)
         await app.process_update(update)
