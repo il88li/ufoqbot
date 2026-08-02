@@ -972,8 +972,8 @@ async def asgi_app(scope, receive, send):
         await send({"type": "http.response.start", "status": 405, "headers": []})
         await send({"type": "http.response.body", "body": b"Method Not Allowed"})
         return
-    
-    # السماح بطلبات GET للتحقق من صحة التطبيق
+
+    # ===== التعامل مع طلبات GET =====
     if scope.get("method") == "GET":
         await send({
             "type": "http.response.start",
@@ -985,8 +985,8 @@ async def asgi_app(scope, receive, send):
             "body": json.dumps({"status": "ok", "message": "Bot is running"}).encode("utf-8")
         })
         return
-    
-    # التأكد من أن الطلب هو POST (webhooks من Telegram)
+
+    # ===== التأكد من أن الطلب هو POST =====
     if scope.get("method") != "POST":
         await send({
             "type": "http.response.start",
@@ -998,11 +998,12 @@ async def asgi_app(scope, receive, send):
             "body": b"Method Not Allowed. Only POST requests are supported."
         })
         return
-    
+
+    # ===== معالجة طلبات POST (Webhook) =====
     # تهيئة التطبيق والطابور عند أول طلب POST
     app_obj = build_application()
     start_queue_worker()
-    
+
     # قراءة جسم الطلب
     body = b""
     more_body = True
@@ -1011,7 +1012,7 @@ async def asgi_app(scope, receive, send):
         if message["type"] == "http.request":
             body += message.get("body", b"")
             more_body = message.get("more_body", False)
-    
+
     # التأكد من أن الجسم ليس فارغاً
     if not body:
         await send({
@@ -1024,16 +1025,11 @@ async def asgi_app(scope, receive, send):
             "body": json.dumps({"status": "error", "message": "Empty request body"}).encode("utf-8")
         })
         return
-    
+
     try:
-        # تحويل البيانات إلى JSON
         data = json.loads(body.decode("utf-8"))
-        
-        # إنشاء تحديث ومعالجته
         update = Update.de_json(data, app_obj.bot)
         await app_obj.process_update(update)
-        
-        # إرسال استجابة نجاح
         response_body = json.dumps({"status": "ok"}).encode("utf-8")
         await send({
             "type": "http.response.start",
