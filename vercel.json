@@ -1,4 +1,40 @@
 {
-  "builds": [{ "src": "main.py", "use": "@vercel/python" }],
-  "routes": [{ "src": "/(.*)", "dest": "main.py" }]
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/webhook",
+      "dest": "main.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ],
+  "env": {
+    "BOT_TOKEN": "@bot_token",
+    "WEBHOOK_URL": "@webhook_url",
+    "ADMIN_ID": "@admin_id",
+    "CHANNEL_ID": "@channel_id",
+    "PROMO_CHANNEL_ID": "@promo_channel_id",
+    "PROMO_CHANNEL_ID_NUMERIC": "@promo_channel_id_numeric",
+    "PROMO_CHANNEL_LINK": "@promo_channel_link",
+    "PROMO_SUB_STARS_LINK": "@promo_sub_stars_link",
+    "BOT_USERNAME": "@bot_username",
+    "MAIN_IMAGE_URL": "@main_image_url",
+    "SUBSCRIPTION_IMAGE_URL": "@subscription_image_url",
+    "PROCESSING_STICKER_ID": "@processing_sticker_id",
+    "DEVELOPER_LINK": "@developer_link",
+    "MAX_IMAGE_SIZE": "5242880",
+    "PROXY_ENABLED": "false",
+    "DOWNLOAD_TIMEOUT": "45",
+    "DOWNLOAD_RETRIES": "3",
+    "SITE_API_URL": "https://ufoq.vercel.app/api/prompt/create",
+    "SITE_API_KEY": "@site_api_key"
+  }
 }
