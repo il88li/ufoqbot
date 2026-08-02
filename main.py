@@ -214,7 +214,6 @@ async def send_prompt_to_site(prompt_text, image_url, user_id, title=None):
         logger.error(f"انتهت مهلة الاتصال بموقع UFOQ للمستخدم {user_id}")
     except Exception as e:
         logger.error(f"خطأ غير متوقع أثناء إرسال البرومبت للموقع: {e}")
-
 # ============================================================
 # معالجة استخراج البرومبت باستخدام Grok API
 # ============================================================
@@ -482,20 +481,559 @@ async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     context.user_data["awaiting_ai_prompt"] = False
+# ============================================================
+# دوال البوت الأساسية ومعالجات الأزرار
+# ============================================================
 
-# ============================================================
-# دوال البوت الأساسية
-# ============================================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أمر /start مع دعم روابط الإحالة والهدايا."""
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # التحقق من الحظر
+    if database.is_banned(user_id):
+        await update.message.reply_text("🚫 أنت محظور من استخدام هذا البوت.")
+        return
+    
+    # معالجة روابط الإحالة والهدايا
+    if context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            referrer_id = int(arg[4:])
+            if referrer_id != user_id:
+                # إضافة المستخدم وتحديث نقاط المُحيل
+                if database.add_user(user_id, referrer_id):
+                    await update.message.reply_text("✅ تم التسجيل بنجاح! حصلت على نقطة مجانية، ومُحيلك حصل على نقطة إضافية.")
+                else:
+                    await update.message.reply_text("👋 مرحباً بعودتك!")
+            else:
+                await update.message.reply_text("👋 لا يمكنك دعوة نفسك.")
+        elif arg.startswith("gift_"):
+            code = arg[5:]
+            gift_info = database.get_gift_info(code)
+            if gift_info is None:
+                await update.message.reply_text(config.GIFT_ALREADY_USED)
+            else:
+                result = database.use_gift(code)
+                if result == "expired":
+                    await update.message.reply_text("❌ انتهت صلاحية هذه الهدية.")
+                elif result == "success":
+                    # إضافة نقاط للمستخدم
+                    database.add_user(user_id)  # إنشاء المستخدم إذا لم يكن موجوداً
+                    database.add_points(user_id, gift_info['points'])
+                    await update.message.reply_text(
+                        config.GIFT_SUCCESS_TEXT.format(
+                            points=gift_info['points'],
+                            code=code
+                        )
+                    )
+                else:
+                    await update.message.reply_text("❌ حدث خطأ في استخدام الهدية.")
+        else:
+            await update.message.reply_text("👋 مرحباً! استخدم الأزرار أدناه.")
+    else:
+        # مستخدم جديد أو عادي
+        database.add_user(user_id)
+    
+    # عرض القائمة الرئيسية
+    text = config.WELCOME_TEXT.format(
+        bot_username=config.BOT_USERNAME
+    )
+    
+    # إرسال الصورة الرئيسية إن وجدت
+    if config.MAIN_IMAGE_URL:
+        try:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=config.MAIN_IMAGE_URL,
+                caption=text,
+                parse_mode='HTML',
+                reply_markup=keyboards.main_menu_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"فشل إرسال الصورة الرئيسية: {e}")
+            await update.message.reply_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=keyboards.main_menu_keyboard()
+            )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
 
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """التحقق من اشتراك المستخدم في القناة الرئيسية المحددة في config.CHANNEL_ID."""
-    if not config.CHANNEL_ID:
-        return True
+    """التحقق من اشتراك المستخدم في القناة الإجبارية."""
     try:
-        member = await context.bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id)
-        return member.status in ("member", "administrator", "creator")
+        chat_member = await context.bot.get_chat_member(
+            chat_id=config.CHANNEL_ID,
+            user_id=user_id
+        )
+        if chat_member.status in ["member", "administrator", "creator"]:
+            return True
     except Exception as e:
-        logger.error(f"خطأ في التحقق من اشتراك المستخدم {user_id}: {e}")
+        logger.warning(f"فشل التحقق من اشتراك المستخدم {user_id}: {e}")
+        # في حالة الخطأ نسمح مؤقتاً (يمكن تعديل السلوك)
         return True
+    return False
 
-async def create_prompt_button(update: Update, c
+async def extract_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زر 'استخراج برومبت'."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    
+    # التحقق من الحظر والحدود
+    if database.is_banned(user_id):
+        await query.edit_message_text("🚫 أنت محظور من استخدام هذه الميزة.")
+        return
+    if not check_rate_limit(user_id):
+        await safe_answer_query(query, "وصلت للحد الأقصى من الطلبات.", show_alert=True)
+        return
+    if not await check_subscription(user_id, context):
+        await query.edit_message_text(
+            config.SUB_REQUIRED_TEXT,
+            parse_mode='HTML',
+            reply_markup=keyboards.subscription_check_keyboard()
+        )
+        return
+    
+    # التحقق من النقاط
+    user_data = database.get_user(user_id)
+    if user_data is None or user_data["points"] < 1:
+        await query.edit_message_text(
+            config.NO_POINTS_TEXT.format(
+                invite_link=database.get_invite_link(user_id)
+            ),
+            parse_mode='HTML',
+            reply_markup=keyboards.points_menu_keyboard()
+        )
+        return
+    
+    # خصم النقطة
+    database.add_points(user_id, -1)
+    logger.info(f"تم خصم نقطة من المستخدم {user_id} لعملية الاستخراج")
+    
+    # طلب إرسال الصورة
+    await query.edit_message_text(
+        config.REQUEST_MEDIA_TEXT,
+        parse_mode='HTML',
+        reply_markup=keyboards.cancel_keyboard()
+    )
+    context.user_data["awaiting_extract"] = True
+
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الصور والروابط المرسلة من المستخدم."""
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    
+    if not context.user_data.get("awaiting_extract", False):
+        await update.message.reply_text("الرجاء الضغط على زر 'استخراج برومبت' أولاً.")
+        return
+    
+    # التحقق من الحظر والنقاط مرة أخرى
+    if database.is_banned(user_id):
+        await update.message.reply_text("🚫 أنت محظور.")
+        context.user_data["awaiting_extract"] = False
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None or user_data["points"] < 0:  # يمكن أن تكون سالبة؟ لكننا نمنع
+        await update.message.reply_text("لا تملك نقاطاً كافية.")
+        context.user_data["awaiting_extract"] = False
+        return
+    
+    image_bytes = None
+    image_url = None
+    photo = None
+    
+    # حالة 1: صورة مباشرة
+    if update.message.photo:
+        try:
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            image_bytes = await file.download_as_bytearray()
+            logger.info(f"تم استلام صورة من المستخدم {user_id}")
+        except Exception as e:
+            logger.error(f"فشل تحميل الصورة: {e}")
+            await update.message.reply_text("❌ فشل تحميل الصورة. حاول مرة أخرى.")
+            return
+    
+    # حالة 2: رابط
+    elif update.message.text and update.message.text.startswith(('http://', 'https://')):
+        url = update.message.text.strip()
+        try:
+            # استخدام asyncio.to_thread لتجنب حظر الحدث
+            image_bytes = await asyncio.to_thread(
+                grok_api.download_image_from_url,
+                url,
+                config.MAX_IMAGE_SIZE
+            )
+            image_url = url
+            logger.info(f"تم تحميل صورة من الرابط {url} للمستخدم {user_id}")
+        except Exception as e:
+            logger.error(f"فشل تحميل الصورة من الرابط: {e}")
+            await update.message.reply_text(config.URL_DOWNLOAD_ERROR)
+            return
+    else:
+        await update.message.reply_text("❌ الرجاء إرسال صورة أو رابط صورة صالح.")
+        return
+    
+    if not image_bytes:
+        await update.message.reply_text("❌ لم يتم استلام بيانات الصورة.")
+        return
+    
+    # التحقق من حجم الصورة
+    if len(image_bytes) > config.MAX_IMAGE_SIZE:
+        await update.message.reply_text(f"❌ حجم الصورة يتجاوز الحد الأقصى ({config.MAX_IMAGE_SIZE//1024//1024} ميجابايت).")
+        context.user_data["awaiting_extract"] = False
+        return
+    
+    # إرسال رسالة "جاري المعالجة"
+    status_msg = await update.message.reply_text("⏳ جاري تحليل الصورة...")
+    
+    # وضع المهمة في الطابور
+    if analysis_queue.qsize() >= MAX_QUEUE_SIZE:
+        await status_msg.edit_text("❌ الطابور ممتلئ. حاول مرة أخرى لاحقاً.")
+        context.user_data["awaiting_extract"] = False
+        return
+    
+    task = {
+        "user_id": user_id,
+        "image_bytes": image_bytes,
+        "context": context,
+        "queue_message_id": status_msg.message_id,
+        "photo": photo.file_id if photo else None,
+        "image_url": image_url
+    }
+    await analysis_queue.put(task)
+    logger.info(f"تم إضافة طلب المستخدم {user_id} إلى الطابور (الطول: {analysis_queue.qsize()})")
+    
+    context.user_data["awaiting_extract"] = False
+
+async def points_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زر 'تجميع نقاط'."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    
+    user_data = database.get_user(user_id)
+    if user_data is None:
+        await query.edit_message_text("❌ لم يتم العثور على بياناتك.")
+        return
+    
+    invited_count = database.get_invited_count(user_id)
+    invite_link = database.get_invite_link(user_id)
+    
+    text = config.POINTS_INFO_TEXT.format(
+        points=user_data["points"],
+        invited_count=invited_count,
+        invite_link=invite_link
+    )
+    
+    # التحقق من شرط الدعوات للترويج
+    if invited_count >= 5:
+        # عرض رسالة الترويج
+        promo_text = config.PROMO_SUCCESS_TEXT
+        await query.edit_message_text(
+            promo_text,
+            parse_mode='HTML',
+            reply_markup=keyboards.promo_success_keyboard()
+        )
+    else:
+        # عرض النقاط مع خيارات الدعوة
+        keyboard = [
+            [InlineKeyboardButton("📤 دعوة الأصدقاء", callback_data="share_invite")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main")]
+        ]
+        if invited_count < 5:
+            keyboard.insert(0, [InlineKeyboardButton("⭐ اشتراك بالنجوم", url=config.PROMO_SUB_STARS_LINK)])
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def share_invite_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مشاركة رابط الدعوة."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    
+    invite_link = database.get_invite_link(user_id)
+    await query.edit_message_text(
+        f"<blockquote>📤 رابط دعوتك:\n<code>{invite_link}</code>\n\nشاركه مع أصدقائك واحصل على نقاط!</blockquote>",
+        parse_mode='HTML',
+        reply_markup=keyboards.back_keyboard()
+    )
+
+async def developer_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زر 'المطور'."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    
+    text = config.DEVELOPER_TEXT
+    await query.edit_message_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=keyboards.developer_keyboard()
+    )
+
+async def promo_channel_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زر 'أحدث البرومبتات'."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    
+    user_id = update.effective_user.id
+    invited_count = database.get_invited_count(user_id)
+    
+    if invited_count >= 5:
+        await query.edit_message_text(
+            config.PROMO_SUCCESS_TEXT,
+            parse_mode='HTML',
+            reply_markup=keyboards.promo_success_keyboard()
+        )
+    else:
+        await query.edit_message_text(
+            config.PROMO_REQUIRED_TEXT.format(
+                invited_count=invited_count,
+                points=database.get_user(user_id)["points"]
+            ),
+            parse_mode='HTML',
+            reply_markup=keyboards.promo_required_keyboard()
+        )
+
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """العودة إلى القائمة الرئيسية."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    
+    text = config.WELCOME_TEXT.format(bot_username=config.BOT_USERNAME)
+    
+    if config.MAIN_IMAGE_URL:
+        try:
+            await query.edit_message_caption(
+                caption=text,
+                parse_mode='HTML',
+                reply_markup=keyboards.main_menu_keyboard()
+            )
+        except:
+            await query.edit_message_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=keyboards.main_menu_keyboard()
+            )
+    else:
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+
+async def cancel_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء عملية الاستخراج."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    
+    context.user_data["awaiting_extract"] = False
+    context.user_data["awaiting_ai_prompt"] = False
+    
+    text = "❌ تم إلغاء العملية."
+    await query.edit_message_text(text)
+    # العودة للقائمة الرئيسية بعد لحظة
+    await asyncio.sleep(1)
+    await back_to_main(update, context)
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء أي عملية جارية عبر الأمر /cancel."""
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    
+    context.user_data["awaiting_extract"] = False
+    context.user_data["awaiting_ai_prompt"] = False
+    
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية.",
+        reply_markup=keyboards.main_menu_keyboard()
+    )
+
+async def gift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استخدام كود هدية عبر الأمر /gift <code>."""
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ الاستخدام: /gift <الكود>")
+        return
+    
+    code = args[0].strip()
+    gift_info = database.get_gift_info(code)
+    if gift_info is None:
+        await update.message.reply_text(config.GIFT_ALREADY_USED)
+        return
+    
+    result = database.use_gift(code)
+    if result == "expired":
+        await update.message.reply_text("❌ انتهت صلاحية هذه الهدية.")
+    elif result == "success":
+        database.add_user(user_id)
+        database.add_points(user_id, gift_info['points'])
+        await update.message.reply_text(
+            config.GIFT_SUCCESS_TEXT.format(
+                points=gift_info['points'],
+                code=code
+            )
+        )
+    else:
+        await update.message.reply_text("❌ حدث خطأ في استخدام الهدية.")
+
+# ============================================================
+# معالج المحادثة الإداري (من admin.py)
+# ============================================================
+
+def setup_admin_handlers(app: Application):
+    """إعداد معالج المحادثة الإداري."""
+    admin_handler = admin.get_admin_conversation_handler()
+    app.add_handler(admin_handler)
+
+# ============================================================
+# تكوين FastAPI و webhook
+# ============================================================
+
+# إنشاء تطبيق FastAPI
+app = FastAPI(title="UFOQ Bot", version="2.0.0")
+
+# إنشاء تطبيق Telegram
+telegram_app = Application.builder().token(config.BOT_TOKEN).build()
+
+# إعداد المعالجات
+telegram_app.add_handler(CommandHandler("start", start_command))
+telegram_app.add_handler(CommandHandler("cancel", cancel_command))
+telegram_app.add_handler(CommandHandler("gift", gift_command))
+
+# أزرار القائمة الرئيسية
+telegram_app.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
+telegram_app.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
+telegram_app.add_handler(CallbackQueryHandler(points_button, pattern="^points$"))
+telegram_app.add_handler(CallbackQueryHandler(developer_button, pattern="^developer$"))
+telegram_app.add_handler(CallbackQueryHandler(promo_channel_button, pattern="^promo_channel$"))
+telegram_app.add_handler(CallbackQueryHandler(share_invite_button, pattern="^share_invite$"))
+telegram_app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
+telegram_app.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
+telegram_app.add_handler(CallbackQueryHandler(check_subscription_button, pattern="^check_sub$"))
+
+# معالجات المحادثة
+telegram_app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_media))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
+
+# إعداد المعالج الإداري
+setup_admin_handlers(telegram_app)
+
+# دالة التحقق من الاشتراك عبر زر
+async def check_subscription_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زر التحقق من الاشتراك."""
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    
+    if await check_subscription(user_id, context):
+        await query.edit_message_text("✅ تم التحقق من اشتراكك! يمكنك استخدام البوت.")
+        # عرض القائمة الرئيسية
+        text = config.WELCOME_TEXT.format(bot_username=config.BOT_USERNAME)
+        await query.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+    else:
+        await query.edit_message_text(
+            config.SUB_REQUIRED_TEXT,
+            parse_mode='HTML',
+            reply_markup=keyboards.subscription_check_keyboard()
+        )
+
+# ============================================================
+# نقطة نهاية webhook
+# ============================================================
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    """نقطة نهاية استقبال تحديثات Telegram."""
+    try:
+        # قراءة البيانات
+        data = await request.json()
+        logger.info(f"استلام تحديث من Telegram: {data.get('update_id', 'unknown')}")
+        
+        # إنشاء كائن Update
+        update = Update.de_json(data, telegram_app.bot)
+        
+        # معالجة التحديث
+        await telegram_app.process_update(update)
+        
+        return Response(status_code=200)
+    except Exception as e:
+        logger.error(f"خطأ في معالجة webhook: {e}", exc_info=True)
+        return Response(status_code=500)
+
+@app.get("/")
+async def root():
+    """نقطة نهاية صحية للتحقق من تشغيل البوت."""
+    return {"status": "running", "bot": config.BOT_USERNAME}
+
+# ============================================================
+# دالة تعيين webhook
+# ============================================================
+
+async def set_webhook():
+    """تعيين webhook عند بدء التشغيل."""
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        logger.warning("WEBHOOK_URL غير محددة، استخدم polling محلياً.")
+        return False
+    
+    # إزالة أي webhook سابق
+    await telegram_app.bot.delete_webhook()
+    
+    # تعيين webhook الجديد
+    result = await telegram_app.bot.set_webhook(
+        url=f"{webhook_url}/webhook",
+        drop_pending_updates=True
+    )
+    
+    if result:
+        logger.info(f"✅ تم تعيين webhook بنجاح: {webhook_url}/webhook")
+    else:
+        logger.error("❌ فشل تعيين webhook")
+    
+    return result
+
+# ============================================================
+# أحداث بدء وإيقاف التشغيل
+# ============================================================
+
+@app.on_event("startup")
+async def startup_event():
