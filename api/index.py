@@ -26,34 +26,20 @@ import keyboards
 import admin
 
 # ============================================================
-# إعداد تسجيل الأخطاء المتقدم
+# إعداد تسجيل الأخطاء (متوافق مع Vercel)
 # ============================================================
 
-# إنشاء مجلد للسجلات إذا لم يكن موجوداً
-LOG_DIR = "logs"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
-
-# تكوين مسجل الأخطاء الرئيسي
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, "bot.log"), encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout)  # فقط إخراج إلى stdout
     ]
 )
 logger = logging.getLogger(__name__)
 
-# مسجل منفصل لأخطاء Webhook
-webhook_logger = logging.getLogger('webhook')
-webhook_logger.setLevel(logging.DEBUG)
-webhook_handler = logging.FileHandler(os.path.join(LOG_DIR, "webhook.log"), encoding='utf-8')
-webhook_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-webhook_logger.addHandler(webhook_handler)
-
 # ============================================================
-# دوال البوت (كما هي)
+# دوال البوت (نفس الكود السابق)
 # ============================================================
 
 _rate_limit_cache = {}
@@ -77,7 +63,7 @@ MAX_QUEUE_SIZE = 100
 pending_tasks = []
 
 # ============================================================
-# دوال مساعدة
+# دوال مساعدة (نفس الكود السابق)
 # ============================================================
 
 async def send_long_message(chat_id, text, context, parse_mode=None):
@@ -114,7 +100,7 @@ async def safe_answer_query(query, text=None, show_alert=False):
             logger.error(f"خطأ في answer_query: {e}")
 
 # ============================================================
-# دوال الطابور والمعالجة
+# دوال الطابور والمعالجة (نفس الكود السابق)
 # ============================================================
 
 async def queue_worker():
@@ -238,7 +224,7 @@ async def send_prompt_to_site(prompt_text, image_url, user_id, title=None):
         logger.error(f"خطأ غير متوقع أثناء إرسال البرومبت للموقع: {e}")
 
 # ============================================================
-# معالجة استخراج البرومبت
+# معالجة استخراج البرومبت (نفس الكود السابق)
 # ============================================================
 
 async def process_analysis_task(task):
@@ -353,7 +339,7 @@ async def process_analysis_task(task):
                 await asyncio.sleep(5 * (attempt + 1))
 
 # ============================================================
-# معالجة "انشاء برومبت"
+# معالجة "انشاء برومبت" (نفس الكود السابق)
 # ============================================================
 
 async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -502,7 +488,7 @@ async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_ai_prompt"] = False
 
 # ============================================================
-# دوال البوت الأساسية
+# دوال البوت الأساسية (نفس الكود السابق)
 # ============================================================
 
 async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -938,7 +924,7 @@ async def delete_webhook_safe():
         return False
 
 # ============================================================
-# تهيئة Flask مع تسجيل أخطاء متقدم
+# تهيئة Flask
 # ============================================================
 
 app = Flask(__name__)
@@ -971,7 +957,6 @@ def build_bot_app():
 def init_app():
     global _bot_app, _is_initialized
     if _is_initialized:
-        logger.debug("التطبيق مهيأ بالفعل")
         return
     logger.info("بدء تهيئة التطبيق...")
     try:
@@ -979,7 +964,6 @@ def init_app():
         logger.info("تم تهيئة قاعدة البيانات")
         _bot_app = build_bot_app()
         logger.info("تم بناء تطبيق البوت")
-        # بدء الطابور الخلفي
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         global queue_worker_task
@@ -992,93 +976,43 @@ def init_app():
 
 @app.before_request
 def before_request():
-    """تهيئة التطبيق قبل كل طلب"""
     if not _is_initialized:
         init_app()
 
-# ============================================================
-# معالج Webhook مع تسجيل أخطاء شامل
-# ============================================================
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """معالج Webhook الرئيسي"""
-    webhook_logger.info("=" * 50)
-    webhook_logger.info("طلـب Webhook جديـد")
-    
-    # تسجيل معلومات الطلب
-    webhook_logger.info(f"Method: {request.method}")
-    webhook_logger.info(f"Path: {request.path}")
-    webhook_logger.info(f"Headers: {dict(request.headers)}")
-    
-    # التحقق من أن التطبيق مهيأ
     if _bot_app is None:
-        webhook_logger.error("التطبيق غير مهيأ (bot_app = None)")
         return jsonify({"status": "error", "message": "Bot not initialized"}), 503
     
-    # قراءة البيانات
     try:
         data = request.get_json()
-        webhook_logger.info(f"Data received: {json.dumps(data, indent=2)[:500]}...")
-    except Exception as e:
-        webhook_logger.error(f"فشل قراءة JSON: {e}")
-        return jsonify({"status": "error", "message": f"Invalid JSON: {str(e)}"}), 400
-    
-    if data is None:
-        webhook_logger.error("البيانات فارغة (data = None)")
-        return jsonify({"status": "error", "message": "Empty request body"}), 400
-    
-    # معالجة التحديث
-    try:
-        webhook_logger.info("بدء معالجة التحديث...")
-        update = Update.de_json(data, _bot_app.bot)
-        webhook_logger.info(f"تحديث من المستخدم: {update.effective_user.id if update.effective_user else 'غير معروف'}")
+        if data is None:
+            return jsonify({"status": "error", "message": "Invalid JSON"}), 400
         
-        # تشغيل المعالجة في حلقة asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            update = Update.de_json(data, _bot_app.bot)
             loop.run_until_complete(_bot_app.process_update(update))
-            webhook_logger.info("تمت معالجة التحديث بنجاح")
         finally:
             loop.close()
         
-        webhook_logger.info("تم إرسال استجابة نجاح")
         return jsonify({"status": "ok"})
-        
     except Exception as e:
-        webhook_logger.error(f"خطأ في معالجة التحديث: {e}", exc_info=True)
+        logger.error(f"Webhook error: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
-
-# ============================================================
-# مسارات إضافية للتحقق
-# ============================================================
 
 @app.route('/', methods=['GET'])
 def root():
-    logger.info("طلب GET على المسار /")
     return jsonify({"status": "ok", "message": "Bot is running"})
 
 @app.route('/health', methods=['GET'])
 def health():
-    logger.info("طلب GET على المسار /health")
     return jsonify({
         "status": "healthy",
         "bot_ready": _bot_app is not None,
         "initialized": _is_initialized,
-        "pending_updates": analysis_queue.qsize()
-    })
-
-@app.route('/debug', methods=['GET'])
-def debug():
-    """مسار للتحقق من حالة التطبيق"""
-    return jsonify({
-        "bot_app": _bot_app is not None,
-        "initialized": _is_initialized,
-        "queue_size": analysis_queue.qsize(),
-        "python_version": sys.version,
-        "cwd": os.getcwd(),
-        "files": os.listdir('.')
+        "queue_size": analysis_queue.qsize()
     })
 
 # ============================================================
@@ -1087,5 +1021,4 @@ def debug():
 
 if __name__ == "__main__":
     init_app()
-    app.run(host="0.0.0.0", port=8000, debug=True)
-app = app
+    app.run(host="0.0.0.0", port=8000)
