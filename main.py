@@ -48,7 +48,7 @@ MAX_QUEUE_SIZE = 100
 pending_tasks = []
 
 # ============================================================
-# دوال مساعدة (لم تتغير)
+# دوال مساعدة
 # ============================================================
 
 async def send_long_message(chat_id, text, context, parse_mode=None):
@@ -85,7 +85,7 @@ async def safe_answer_query(query, text=None, show_alert=False):
             logger.error(f"خطأ في answer_query: {e}")
 
 # ============================================================
-# دوال الطابور والمعالجة (لم تتغير)
+# دوال الطابور والمعالجة
 # ============================================================
 
 async def queue_worker():
@@ -209,7 +209,7 @@ async def send_prompt_to_site(prompt_text, image_url, user_id, title=None):
         logger.error(f"خطأ غير متوقع أثناء إرسال البرومبت للموقع: {e}")
 
 # ============================================================
-# معالجة استخراج البرومبت (لم تتغير)
+# معالجة استخراج البرومبت
 # ============================================================
 
 async def process_analysis_task(task):
@@ -324,7 +324,7 @@ async def process_analysis_task(task):
                 await asyncio.sleep(5 * (attempt + 1))
 
 # ============================================================
-# معالجة "انشاء برومبت" (لم تتغير)
+# معالجة "انشاء برومبت"
 # ============================================================
 
 async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -473,7 +473,7 @@ async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_ai_prompt"] = False
 
 # ============================================================
-# دوال البوت الأساسية (لم تتغير)
+# دوال البوت الأساسية
 # ============================================================
 
 async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -500,3 +500,4 @@ async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYP
         invite_link = database.get_invite_link(user_id)
         caption = config.NO_POINTS_TEXT.format(invite_link=invite_link)
         back_keyboard = keyboards.back_keyboard()
+        await safe_edit_caption(query, caption, back_k
