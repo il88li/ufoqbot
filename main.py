@@ -500,4 +500,497 @@ async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYP
         invite_link = database.get_invite_link(user_id)
         caption = config.NO_POINTS_TEXT.format(invite_link=invite_link)
         back_keyboard = keyboards.back_keyboard()
-        await safe_edit_caption(query, caption, back_k
+        await safe_edit_caption(query, caption, back_keyboard)
+        return
+    
+    context.user_data["awaiting_ai_prompt"] = True
+    cancel_keyboard = keyboards.cancel_keyboard()
+    await safe_edit_caption(query, config.REQUEST_PROMPT_TEXT, cancel_keyboard)
+
+_subscription_cache = {}
+CACHE_TTL = 30
+
+async def check_subscription(chat_id, context):
+    now = time.time()
+    if chat_id in _subscription_cache:
+        cached = _subscription_cache[chat_id]
+        if now - cached["timestamp"] < CACHE_TTL:
+            return cached["status"]
+    try:
+        member = await context.bot.get_chat_member(config.CHANNEL_ID, chat_id)
+        status = member.status in ["member", "administrator", "creator"]
+    except:
+        status = False
+    _subscription_cache[chat_id] = {"status": status, "timestamp": now}
+    return status
+
+async def safe_edit_caption(query, caption, reply_markup=None):
+    try:
+        if query.message.caption is None:
+            await query.message.reply_photo(
+                photo=config.MAIN_IMAGE_URL,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            try:
+                await query.message.delete()
+            except:
+                pass
+            return
+        current_caption = query.message.caption or ""
+        current_markup = query.message.reply_markup
+        if current_caption == caption and current_markup == reply_markup:
+            return
+        await query.edit_message_caption(caption=caption, reply_markup=reply_markup, parse_mode='HTML')
+    except Exception as e:
+        if "Message is not modified" in str(e):
+            pass
+        elif "There is no caption" in str(e):
+            try:
+                await query.message.reply_photo(
+                    photo=config.MAIN_IMAGE_URL,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+                await query.message.delete()
+            except:
+                pass
+        else:
+            raise
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    args = context.args
+    if not check_rate_limit(user_id):
+        await update.message.reply_text("وصلت للحد الأقصى من الطلبات. يرجى الانتظار قليلاً.")
+        return
+    if database.is_banned(user_id):
+        await update.message.reply_text("لا يمكنك استخدام هذا البوت حالياً.")
+        return
+    if args:
+        param = args[0]
+        if param.startswith("ref_"):
+            invited_by = param.split("_")[1]
+            if invited_by.isdigit():
+                invited_by = int(invited_by)
+                user_data = database.get_user(user_id)
+                if user_data is None:
+                    database.add_user(user_id, invited_by)
+                    await context.bot.send_message(
+                        chat_id=invited_by,
+                        text="قام صديقك بالاشتراك عبر رابطك! حصلت على نقطة إضافية."
+                    )
+                    await update.message.reply_text("تم تفعيل حسابك! حصلت على نقطة مجانية، وصديقك حصل على نقطة أيضاً.")
+                else:
+                    await update.message.reply_text("هذا الرابط خاص بالدعوة، لكنك مسجل بالفعل.")
+            else:
+                await update.message.reply_text("رابط دعوة غير صالح.")
+            return
+        elif param.startswith("gift_"):
+            code = param.split("_")[1]
+            gift = database.get_gift_info(code)
+            if not gift:
+                await update.message.reply_text("رابط هدية غير صالح.")
+                return
+            if gift["used_count"] >= gift["max_uses"]:
+                await update.message.reply_text(config.GIFT_ALREADY_USED)
+                return
+            result = database.use_gift(code)
+            if result == "expired":
+                await update.message.reply_text(config.GIFT_ALREADY_USED)
+                return
+            database.add_points(user_id, gift["points"])
+            await update.message.reply_text(
+                config.GIFT_SUCCESS_TEXT.format(points=gift["points"], code=code),
+                parse_mode='HTML'
+            )
+            return
+    if not await check_subscription(user_id, context):
+        caption = config.SUB_REQUIRED_TEXT
+        keyboard = keyboards.subscription_check_keyboard()
+        await update.message.reply_photo(
+            photo=config.SUBSCRIPTION_IMAGE_URL,
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None:
+        database.add_user(user_id, None)
+        await update.message.reply_text("مرحباً بك! حصلت على نقطة مجانية للبدء.")
+    caption = config.WELCOME_TEXT
+    keyboard = keyboards.main_menu_keyboard()
+    await update.message.reply_photo(
+        photo=config.MAIN_IMAGE_URL,
+        caption=caption,
+        reply_markup=keyboard,
+        parse_mode='HTML'
+    )
+
+async def extract_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id):
+        await safe_answer_query(query, "وصلت للحد الأقصى من الطلبات.", show_alert=True)
+        return
+    if database.is_banned(user_id):
+        await query.edit_message_caption("لا يمكنك استخدام هذه الميزة.")
+        return
+    if not await check_subscription(user_id, context):
+        caption = config.SUB_REQUIRED_TEXT
+        keyboard = keyboards.subscription_check_keyboard()
+        await safe_edit_caption(query, caption, keyboard)
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None or user_data["points"] < 1:
+        invite_link = database.get_invite_link(user_id)
+        caption = config.NO_POINTS_TEXT.format(invite_link=invite_link)
+        back_keyboard = keyboards.back_keyboard()
+        await safe_edit_caption(query, caption, back_keyboard)
+        return
+    context.user_data["awaiting_media"] = True
+    cancel_keyboard = keyboards.cancel_keyboard()
+    await safe_edit_caption(query, config.REQUEST_MEDIA_TEXT, cancel_keyboard)
+
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("دالة handle_image تم استدعاؤها")
+    if update.effective_user is None:
+        logger.warning("التحديث لا يحتوي على مستخدم، تم التجاهل تماماً.")
+        return
+    user_id = update.effective_user.id
+    logger.info(f"المستخدم {user_id} أرسل صورة")
+    if not check_rate_limit(user_id):
+        await update.message.reply_text("وصلت للحد الأقصى من الطلبات. يرجى الانتظار قليلاً.")
+        return
+    if database.is_banned(user_id):
+        await update.message.reply_text("لا يمكنك استخدام هذه الميزة.")
+        return
+    if not context.user_data.get("awaiting_media"):
+        await update.message.reply_text("الرجاء الضغط على زر 'استخراج برومبت' أولاً.")
+        return
+    if not update.message.photo:
+        await update.message.reply_text("يرجى إرسال صورة واحدة فقط.")
+        return
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    if file.file_size > config.MAX_IMAGE_SIZE:
+        await update.message.reply_text(f"حجم الصورة كبير جداً. الحد الأقصى هو {config.MAX_IMAGE_SIZE // (1024*1024)} ميجابايت.")
+        context.user_data["awaiting_media"] = False
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None or user_data["points"] < 1:
+        await update.message.reply_text("لا تملك نقاطاً كافية.")
+        context.user_data["awaiting_media"] = False
+        return
+    database.add_points(user_id, -1)
+    logger.info(f"تم خصم نقطة من المستخدم {user_id}")
+    image_bytes = await file.download_as_bytearray()
+    logger.info(f"تم تحميل الصورة، حجمها {len(image_bytes)} بايت")
+    if analysis_queue.qsize() >= MAX_QUEUE_SIZE:
+        await update.message.reply_text("الطابور ممتلئ حالياً، يرجى المحاولة لاحقاً.")
+        context.user_data["awaiting_media"] = False
+        return
+    queue_msg = await update.message.reply_text(
+        "تم استلام طلبك! تم إضافته إلى قائمة الانتظار.\n"
+        f"موقعك في الطابور: {analysis_queue.qsize() + 1}\n"
+        "سيتم إعلامك عند الانتهاء..."
+    )
+    task = {
+        'user_id': user_id,
+        'image_bytes': image_bytes,
+        'context': context,
+        'queue_message_id': queue_msg.message_id,
+        'photo': image_bytes
+    }
+    await analysis_queue.put(task)
+    logger.info(f"تم إضافة طلب المستخدم {user_id} إلى الطابور (الطلبات المتراكمة: {analysis_queue.qsize()})")
+    context.user_data["awaiting_media"] = False
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    if not context.user_data.get("awaiting_media"):
+        await update.message.reply_text("الرجاء الضغط على زر 'استخراج برومبت' أولاً.")
+        return
+    if not update.message.text:
+        await update.message.reply_text("الرجاء إرسال رابط صحيح.")
+        return
+    url = update.message.text.strip()
+    if not url.startswith(('http://', 'https://')):
+        await update.message.reply_text(config.INVALID_URL_TEXT)
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None or user_data["points"] < 1:
+        await update.message.reply_text("لا تملك نقاطاً كافية.")
+        context.user_data["awaiting_media"] = False
+        return
+    try:
+        image_bytes = await asyncio.to_thread(grok_api.download_image_from_url, url, config.MAX_IMAGE_SIZE)
+    except ValueError as e:
+        await update.message.reply_text(f"[!] {str(e)}")
+        context.user_data["awaiting_media"] = False
+        return
+    except Exception as e:
+        error_msg = str(e)
+        if "Pinterest" in error_msg:
+            user_error = "فشل تحميل الصورة من Pinterest. تأكد من صحة الرابط وأن الصورة عامة."
+        elif "og:image" in error_msg or "img" in error_msg:
+            user_error = "تعذر العثور على صورة في هذا الرابط. حاول استخدام رابط مباشر لصورة."
+        elif "HTTP" in error_msg:
+            user_error = "الموقع غير متاح حالياً. حاول مرة أخرى لاحقاً."
+        elif "حجم" in error_msg:
+            user_error = error_msg
+        else:
+            user_error = config.URL_DOWNLOAD_ERROR
+        await update.message.reply_text(f"{user_error}\nتفاصيل: {error_msg[:100]}")
+        context.user_data["awaiting_media"] = False
+        return
+    database.add_points(user_id, -1)
+    if analysis_queue.qsize() >= MAX_QUEUE_SIZE:
+        await update.message.reply_text("الطابور ممتلئ حالياً، يرجى المحاولة لاحقاً.")
+        context.user_data["awaiting_media"] = False
+        return
+    queue_msg = await update.message.reply_text(
+        "تم استلام طلبك! جاري تحميل الصورة...\n"
+        f"موقعك في الطابور: {analysis_queue.qsize() + 1}"
+    )
+    task = {
+        'user_id': user_id,
+        'image_bytes': image_bytes,
+        'context': context,
+        'queue_message_id': queue_msg.message_id,
+        'photo': image_bytes
+    }
+    await analysis_queue.put(task)
+    context.user_data["awaiting_media"] = False
+
+async def cancel_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    context.user_data["awaiting_media"] = False
+    context.user_data["awaiting_ai_prompt"] = False
+    caption = config.WELCOME_TEXT
+    keyboard = keyboards.main_menu_keyboard()
+    await safe_edit_caption(query, caption, keyboard)
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    context.user_data["awaiting_media"] = False
+    context.user_data["awaiting_ai_prompt"] = False
+    await update.message.reply_text("تم إلغاء العملية.")
+    caption = config.WELCOME_TEXT
+    keyboard = keyboards.main_menu_keyboard()
+    await update.message.reply_photo(
+        photo=config.MAIN_IMAGE_URL,
+        caption=caption,
+        reply_markup=keyboard,
+        parse_mode='HTML'
+    )
+
+async def promo_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id):
+        await safe_answer_query(query, "وصلت للحد الأقصى من الطلبات.", show_alert=True)
+        return
+    if database.is_banned(user_id):
+        await query.edit_message_caption("لا يمكنك استخدام هذه الميزة.")
+        return
+    if not await check_subscription(user_id, context):
+        caption = config.SUB_REQUIRED_TEXT
+        keyboard = keyboards.subscription_check_keyboard()
+        await safe_edit_caption(query, caption, keyboard)
+        return
+    user_data = database.get_user(user_id)
+    if user_data is None:
+        await safe_edit_caption(query, "حدث خطأ في استرجاع بياناتك.", keyboards.back_keyboard())
+        return
+    invited_count = user_data["invite_count"]
+    points = user_data["points"]
+    if invited_count < 5:
+        caption = config.PROMO_REQUIRED_TEXT.format(invited_count=invited_count, points=points)
+        keyboard = keyboards.promo_required_keyboard()
+        await safe_edit_caption(query, caption, keyboard)
+        return
+    caption = config.PROMO_SUCCESS_TEXT
+    keyboard = keyboards.promo_success_keyboard()
+    await safe_edit_caption(query, caption, keyboard)
+
+async def other_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id):
+        await safe_answer_query(update.callback_query, "وصلت للحد الأقصى من الطلبات.", show_alert=True)
+        return
+    query = update.callback_query
+    await safe_answer_query(query)
+    if database.is_banned(user_id):
+        if query.message.caption is not None:
+            await query.edit_message_caption("لا يمكنك استخدام هذه الميزة.")
+        else:
+            await query.message.reply_text("لا يمكنك استخدام هذه الميزة.")
+        return
+    if not await check_subscription(user_id, context):
+        caption = config.SUB_REQUIRED_TEXT
+        keyboard = keyboards.subscription_check_keyboard()
+        await safe_edit_caption(query, caption, keyboard)
+        return
+    data = query.data
+    if data == "points":
+        user_data = database.get_user(user_id)
+        if user_data:
+            points = user_data["points"]
+            invited_count = user_data["invite_count"]
+            invite_link = database.get_invite_link(user_id)
+            text = config.POINTS_INFO_TEXT.format(
+                invite_link=invite_link,
+                invited_count=invited_count,
+                points=points
+            )
+            keyboard = keyboards.points_menu_keyboard()
+            await safe_edit_caption(query, text, keyboard)
+        else:
+            await safe_edit_caption(query, "حدث خطأ في استرجاع بياناتك.", keyboards.points_menu_keyboard())
+    elif data == "developer":
+        text = config.DEVELOPER_TEXT
+        keyboard = keyboards.developer_keyboard()
+        await safe_edit_caption(query, text, keyboard)
+    elif data == "back_to_main":
+        context.user_data["awaiting_media"] = False
+        context.user_data["awaiting_ai_prompt"] = False
+        caption = config.WELCOME_TEXT
+        keyboard = keyboards.main_menu_keyboard()
+        await safe_edit_caption(query, caption, keyboard)
+    elif data == "check_sub":
+        if user_id in _subscription_cache:
+            del _subscription_cache[user_id]
+        if await check_subscription(user_id, context):
+            caption = "تم التحقق من اشتراكك! يمكنك الآن استخدام البوت."
+            keyboard = keyboards.main_menu_keyboard()
+            await safe_edit_caption(query, caption, keyboard)
+        else:
+            caption = "لا يزال الاشتراك غير مفعّل. يرجى الاشتراك ثم الضغط على 'تحقق'."
+            await safe_edit_caption(query, caption, keyboards.subscription_check_keyboard())
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"خطأ غير متوقع: {context.error}", exc_info=True)
+    if update and update.effective_message and update.effective_user:
+        try:
+            await update.effective_message.reply_text("عذراً، حدث خطأ غير متوقع. تم إبلاغ المطور.")
+        except Exception as e:
+            logger.error(f"تعذر إرسال رسالة الخطأ للمستخدم: {e}")
+    else:
+        logger.warning("التحديث لا يحتوي على مستخدم أو رسالة، تم تجاهل إرسال رسالة الخطأ.")
+
+async def delete_webhook_safe():
+    try:
+        app_temp = Application.builder().token(config.BOT_TOKEN).build()
+        await app_temp.bot.delete_webhook()
+        logger.info("تم حذف Webhook بنجاح")
+        return True
+    except Exception as e:
+        logger.warning(f"فشل حذف Webhook: {e}")
+        return False
+
+# ============================================================
+# تهيئة Flask مع دعم Vercel
+# ============================================================
+
+app = Flask(__name__)
+_bot_app = None
+_is_initialized = False
+
+def build_bot_app():
+    app_obj = Application.builder().token(config.BOT_TOKEN).build()
+    app_obj.add_handler(CommandHandler("start", start))
+    app_obj.add_handler(CommandHandler("cancel", cancel_command))
+    app_obj.add_handler(CommandHandler("admin", admin.admin_panel_command))
+    app_obj.add_handler(CommandHandler("add_points", admin.add_points_command))
+    app_obj.add_handler(CommandHandler("remove_points", admin.remove_points_command))
+    app_obj.add_handler(CommandHandler("create_gift", admin.create_gift_command))
+    app_obj.add_handler(CommandHandler("ban", admin.ban_command))
+    app_obj.add_handler(CommandHandler("unban", admin.unban_command))
+    app_obj.add_handler(CommandHandler("banned_list", admin.banned_list_command))
+    app_obj.add_handler(admin.get_admin_conversation_handler())
+    app_obj.add_handler(CallbackQueryHandler(extract_button, pattern="^extract$"))
+    app_obj.add_handler(CallbackQueryHandler(create_prompt_button, pattern="^create_prompt$"))
+    app_obj.add_handler(CallbackQueryHandler(cancel_extract, pattern="^cancel_extract$"))
+    app_obj.add_handler(CallbackQueryHandler(promo_channel_handler, pattern="^promo_channel$"))
+    app_obj.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_image))
+    app_obj.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'), handle_url))
+    app_obj.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_prompt))
+    app_obj.add_handler(CallbackQueryHandler(other_callbacks, pattern="^(?!extract$|create_prompt$|cancel_extract$|admin_|promo_channel$).*$"))
+    app_obj.add_error_handler(error_handler)
+    return app_obj
+
+def init_app():
+    global _bot_app, _is_initialized
+    if _is_initialized:
+        return
+    logger.info("بدء تهيئة التطبيق...")
+    database.init_db()
+    _bot_app = build_bot_app()
+    # بدء الطابور الخلفي كـ background task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    global queue_worker_task
+    queue_worker_task = loop.create_task(queue_worker())
+    _is_initialized = True
+    logger.info("تم تهيئة التطبيق وبدء الطابور")
+
+@app.before_request
+def before_request():
+    init_app()
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    global _bot_app
+    if _bot_app is None:
+        return jsonify({"status": "error", "message": "Bot not initialized"}), 503
+    
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"status": "error", "message": "Invalid JSON"}), 400
+        
+        # معالجة التحديث باستخدام asyncio.run()
+        try:
+            update = Update.de_json(data, _bot_app.bot)
+            asyncio.run(_bot_app.process_update(update))
+        except Exception as e:
+            logger.error(f"Error processing update: {e}", exc_info=True)
+            return jsonify({"status": "error", "message": str(e)}), 500
+        
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        logger.error(f"Webhook error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({"status": "ok", "message": "Bot is running"})
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "healthy", "bot_ready": _bot_app is not None})
+
+# ===== التشغيل المحلي =====
+if __name__ == "__main__":
+    init_app()
+    app.run(host="0.0.0.0", port=8000)
