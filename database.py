@@ -3,12 +3,19 @@ import os
 import config
 import secrets
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
+# ============================================================
+# تغيير مسار قاعدة البيانات إلى /tmp (متوافق مع Vercel)
+# ============================================================
+
+# في بيئة Vercel، نستخدم /tmp للكتابة
+if os.environ.get('VERCEL'):
+    DB_PATH = "/tmp/users.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # جدول المستخدمين
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -17,14 +24,12 @@ def init_db():
             invite_count INTEGER DEFAULT 0
         )
     ''')
-    # جدول المحظورين
     c.execute('''
         CREATE TABLE IF NOT EXISTS banned_users (
             user_id INTEGER PRIMARY KEY,
             banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # جدول روابط الهدية
     c.execute('''
         CREATE TABLE IF NOT EXISTS gift_links (
             code TEXT PRIMARY KEY,
@@ -36,8 +41,12 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+    print(f"✅ قاعدة البيانات مهيأة في: {DB_PATH}")
 
-# دوال المستخدمين (كما هي)
+# ============================================================
+# باقي الدوال كما هي (بدون تغيير)
+# ============================================================
+
 def get_user(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -90,7 +99,6 @@ def get_invited_count(user_id):
     conn.close()
     return count
 
-# دوال الحظر
 def is_banned(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -121,9 +129,8 @@ def get_banned_users():
     conn.close()
     return rows
 
-# دوال روابط الهدية
 def create_gift_link(points, max_uses):
-    code = secrets.token_hex(6)  # كود عشوائي فريد
+    code = secrets.token_hex(6)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO gift_links (code, points, max_uses) VALUES (?, ?, ?)", (code, points, max_uses))
