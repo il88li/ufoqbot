@@ -487,17 +487,15 @@ async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # دوال البوت الأساسية
 # ============================================================
 
-async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user is None:
-        return
-    query = update.callback_query
-    await safe_answer_query(query)
-    user_id = update.effective_user.id
-    
-    if not check_rate_limit(user_id):
-        await safe_answer_query(query, "وصلت للحد الأقصى من الطلبات.", show_alert=True)
-        return
-    if database.is_banned(user_id):
-        await query.edit_message_caption("لا يمكنك استخدام هذه الميزة.")
-        return
-    if not await check_subscription(user_id, context
+async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """التحقق من اشتراك المستخدم في القناة الرئيسية المحددة في config.CHANNEL_ID."""
+    if not config.CHANNEL_ID:
+        return True
+    try:
+        member = await context.bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.error(f"خطأ في التحقق من اشتراك المستخدم {user_id}: {e}")
+        return True
+
+async def create_prompt_button(update: Update, c
