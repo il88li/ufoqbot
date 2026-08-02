@@ -1,6 +1,6 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8998562807:AAG2o-n-qcOvG5zjk_TAzNB8PZ0AM2Pyl3U")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8998562807:AAFHlTrhC-AqULjF5DIXF14bL2b8kd8F2wc")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "UFOQ_BOT")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@UFOQ_7")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6689435577"))
