@@ -5,6 +5,7 @@ import asyncio
 import os
 import aiohttp
 import re
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest, RetryAfter
 from telegram.ext import (
@@ -923,11 +924,10 @@ async def delete_webhook_safe():
 
 _app_instance = None
 _queue_worker_task = None
-app = None  # المتغير المطلوب من Vercel
 
 def build_application():
     """بناء تطبيق البوت مع جميع المعالجات."""
-    global _app_instance, app
+    global _app_instance
     if _app_instance is not None:
         return _app_instance
     
@@ -955,7 +955,6 @@ def build_application():
     app_obj.add_error_handler(error_handler)
     
     _app_instance = app_obj
-    app = app_obj  # تعيين المتغير العام
     return app_obj
 
 def start_queue_worker():
@@ -966,21 +965,61 @@ def start_queue_worker():
         _queue_worker_task = loop.create_task(queue_worker())
         logger.info("تم بدء معالج الطابور الخلفي لـ Vercel")
 
-async def handler(request):
-    """نقطة دخول Vercel (ASGI) - تستخدم المتغير العام app."""
+async def asgi_app(scope, receive, send):
+    """دالة ASGI الرئيسية للتعامل مع طلبات Vercel."""
+    # التأكد من أننا نتعامل مع طلب HTTP
+    if scope["type"] != "http":
+        await send({"type": "http.response.start", "status": 405, "headers": []})
+        await send({"type": "http.response.body", "body": b"Method Not Allowed"})
+        return
+    
     # تهيئة التطبيق والطابور عند أول طلب
-    if app is None:
-        build_application()
+    app_obj = build_application()
     start_queue_worker()
     
+    # قراءة جسم الطلب
+    body = b""
+    more_body = True
+    while more_body:
+        message = await receive()
+        if message["type"] == "http.request":
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
+    
     try:
-        data = await request.json()
-        update = Update.de_json(data, app.bot)
-        await app.process_update(update)
-        return {"status": "ok"}
+        # تحويل البيانات إلى JSON
+        data = json.loads(body.decode("utf-8"))
+        
+        # إنشاء تحديث ومعالجته
+        update = Update.de_json(data, app_obj.bot)
+        await app_obj.process_update(update)
+        
+        # إرسال استجابة نجاح
+        response_body = json.dumps({"status": "ok"}).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/json")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": response_body
+        })
     except Exception as e:
-        logger.error(f"خطأ في معالج webhook: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}, 500
+        logger.error(f"خطأ في معالج ASGI: {e}", exc_info=True)
+        response_body = json.dumps({"status": "error", "message": str(e)}).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 500,
+            "headers": [(b"content-type", b"application/json")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": response_body
+        })
+
+# ===== المتغير المطلوب من Vercel =====
+app = asgi_app
 
 # ============================================================
 # التشغيل المحلي (polling) للاختبار
@@ -999,14 +1038,14 @@ def main():
         queue_worker_task = loop.create_task(queue_worker())
         
         # بناء التطبيق
-        app = build_application()
+        app_obj = build_application()
         
         # التحقق من صلاحيات القناة (اختياري)
         async def check_channel_permissions():
             try:
                 chat_id = config.PROMO_CHANNEL_ID_NUMERIC or config.PROMO_CHANNEL_ID
                 if chat_id:
-                    me = await app.bot.get_chat_member(chat_id, app.bot.id)
+                    me = await app_obj.bot.get_chat_member(chat_id, app_obj.bot.id)
                     if me.status not in ["administrator", "creator"]:
                         logger.warning(f"البوت ليس أدمن في القناة {chat_id}، قد لا يتمكن من النشر.")
                     else:
@@ -1019,7 +1058,7 @@ def main():
         loop.create_task(check_channel_permissions())
         
         logger.info("البوت يعمل الآن مع polling")
-        app.run_polling(poll_interval=5, allowed_updates=Update.ALL_TYPES)
+        app_obj.run_polling(poll_interval=5, allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         logger.critical(f"فشل بدء التشغيل: {e}", exc_info=True)
         raise
