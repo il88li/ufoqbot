@@ -33,13 +33,13 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)  # فقط إخراج إلى stdout
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# دوال البوت (نفس الكود السابق)
+# دوال البوت
 # ============================================================
 
 _rate_limit_cache = {}
@@ -63,7 +63,7 @@ MAX_QUEUE_SIZE = 100
 pending_tasks = []
 
 # ============================================================
-# دوال مساعدة (نفس الكود السابق)
+# دوال مساعدة
 # ============================================================
 
 async def send_long_message(chat_id, text, context, parse_mode=None):
@@ -100,7 +100,7 @@ async def safe_answer_query(query, text=None, show_alert=False):
             logger.error(f"خطأ في answer_query: {e}")
 
 # ============================================================
-# دوال الطابور والمعالجة (نفس الكود السابق)
+# دوال الطابور والمعالجة
 # ============================================================
 
 async def queue_worker():
@@ -224,7 +224,7 @@ async def send_prompt_to_site(prompt_text, image_url, user_id, title=None):
         logger.error(f"خطأ غير متوقع أثناء إرسال البرومبت للموقع: {e}")
 
 # ============================================================
-# معالجة استخراج البرومبت (نفس الكود السابق)
+# معالجة استخراج البرومبت
 # ============================================================
 
 async def process_analysis_task(task):
@@ -339,7 +339,7 @@ async def process_analysis_task(task):
                 await asyncio.sleep(5 * (attempt + 1))
 
 # ============================================================
-# معالجة "انشاء برومبت" (نفس الكود السابق)
+# معالجة "انشاء برومبت"
 # ============================================================
 
 async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -488,7 +488,7 @@ async def handle_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_ai_prompt"] = False
 
 # ============================================================
-# دوال البوت الأساسية (نفس الكود السابق)
+# دوال البوت الأساسية
 # ============================================================
 
 async def create_prompt_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -979,28 +979,52 @@ def before_request():
     if not _is_initialized:
         init_app()
 
+# ============================================================
+# المسار الرئيسي للويب هوك
+# ============================================================
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """معالج Webhook الرئيسي من تيليغرام"""
+    logger.info("📩 تم استلام طلب Webhook جديد")
+    
     if _bot_app is None:
+        logger.error("❌ _bot_app غير مهيأ")
         return jsonify({"status": "error", "message": "Bot not initialized"}), 503
     
     try:
+        # قراءة البيانات
         data = request.get_json()
         if data is None:
+            logger.error("❌ البيانات فارغة أو غير صالحة")
             return jsonify({"status": "error", "message": "Invalid JSON"}), 400
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        logger.info(f"✅ تم استلام بيانات: {json.dumps(data)[:200]}...")
+        
+        # معالجة التحديث
         try:
             update = Update.de_json(data, _bot_app.bot)
-            loop.run_until_complete(_bot_app.process_update(update))
-        finally:
-            loop.close()
-        
-        return jsonify({"status": "ok"})
+            # تشغيل المعالجة في حلقة asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_bot_app.process_update(update))
+                logger.info("✅ تمت معالجة التحديث بنجاح")
+            finally:
+                loop.close()
+            
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            logger.error(f"❌ خطأ في معالجة التحديث: {e}", exc_info=True)
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
     except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
+        logger.error(f"❌ خطأ في معالج Webhook: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+# ============================================================
+# مسار إضافي للتحقق من صحة التطبيق
+# ============================================================
 
 @app.route('/', methods=['GET'])
 def root():
