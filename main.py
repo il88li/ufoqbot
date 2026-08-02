@@ -973,7 +973,20 @@ async def asgi_app(scope, receive, send):
         await send({"type": "http.response.body", "body": b"Method Not Allowed"})
         return
     
-    # التأكد من أن الطلب هو POST (webhooks من Telegram تكون POST)
+    # السماح بطلبات GET للتحقق من صحة التطبيق
+    if scope.get("method") == "GET":
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/json")]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": json.dumps({"status": "ok", "message": "Bot is running"}).encode("utf-8")
+        })
+        return
+    
+    # التأكد من أن الطلب هو POST (webhooks من Telegram)
     if scope.get("method") != "POST":
         await send({
             "type": "http.response.start",
@@ -986,7 +999,7 @@ async def asgi_app(scope, receive, send):
         })
         return
     
-    # تهيئة التطبيق والطابور عند أول طلب
+    # تهيئة التطبيق والطابور عند أول طلب POST
     app_obj = build_application()
     start_queue_worker()
     
